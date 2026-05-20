@@ -10,16 +10,20 @@
     system = "x86_64-linux";
     pkgs = import nixpkgs { inherit system; };
 
-    container-init = pkgs.rustPlatform.buildRustPackage {
-      pname = "container-init";
-      version = "0.2.0";
+container-init = pkgs.rustPlatform.buildRustPackage {
+  pname = "container-init";
+  version = "0.2.0";
 
-      src = ./rust-init;
+  src = pkgs.lib.cleanSource ./rust-init;
 
-      cargoLock = {
-        lockFile = ./rust-init/Cargo.lock;
-      };
-    };
+  cargoLock = {
+    lockFile = ./rust-init/Cargo.lock;
+  };
+
+  nativeBuildInputs = with pkgs; [
+    pkg-config
+  ];
+};
 
   in {
     packages.${system} = {
