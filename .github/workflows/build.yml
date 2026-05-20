@@ -1,0 +1,38 @@
+name: build-minimalbase-ng
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build image
+        run: nix build .#base-image
+
+      - name: Load Docker image
+        run: docker load < result
+
+      - name: Login to GHCR
+        if: github.ref == 'refs/heads/main'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Tag image
+        if: github.ref == 'refs/heads/main'
+        run: |
+          docker tag minimalbase-ng:latest ghcr.io/${{ github.repository }}:latest
+
+      - name: Push image
+        if: github.ref == 'refs/heads/main'
+        run: docker push ghcr.io/${{ github.repository }}:latest
