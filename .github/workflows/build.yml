@@ -17,7 +17,15 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-
+            
+      - name: Debug rust-init directory
+        run: |
+          echo "=== repo root ==="
+          ls -լ .
+          echo "=== rust-init ==="
+          ls -al rust-init
+          echo "=== cargo files ==="
+          find rust-init -maxdepth 2 -type f
       - name: Build image
         run: nix build .#base-image
 
