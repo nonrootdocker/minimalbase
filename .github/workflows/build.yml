@@ -21,7 +21,7 @@ jobs:
       - name: Debug rust-init directory
         run: |
           echo "=== repo root ==="
-          ls -լ .
+          ls -L .
           echo "=== rust-init ==="
           ls -al rust-init
           echo "=== cargo files ==="
