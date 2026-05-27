@@ -11,7 +11,7 @@
     pkgs = import nixpkgs { inherit system; };
 
 container-init = pkgs.rustPlatform.buildRustPackage {
-  container-init = "container-init";
+  name = "container-init";
   version = "0.2.0";
 
   src = pkgs.lib.cleanSource ./rust-init;
@@ -27,7 +27,7 @@ container-init = pkgs.rustPlatform.buildRustPackage {
 
   in {
     packages.${system} = {
-      pname = "container-init";
+      container-init = "container-init";
 
       base-image = pkgs.dockerTools.buildImage {
         name = "minimalbase-ng";
