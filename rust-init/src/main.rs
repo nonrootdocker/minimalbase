@@ -40,6 +40,37 @@ fn load_abi() -> Result<(String, Vec<String>), String> {
 }
 
 /// -------------------------
+/// Path traversal validation
+/// -------------------------
+fn validate_process_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("empty process name".into());
+    }
+
+    if name.contains('/') {
+        return Err("invalid process name: contains '/'".into());
+    }
+
+    if name.contains("..") {
+        return Err("invalid process name: path traversal detected".into());
+    }
+
+    if name.contains('\0') {
+        return Err("invalid process name: null byte".into());
+    }
+
+    // Optional strict whitelist (recommended)
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err("invalid process name: illegal characters".into());
+    }
+
+    Ok(())
+}
+
+/// -------------------------
 /// resolve execution (v2.1 rules)
 /// -------------------------
 fn resolve_exec(exec: &str, args: Vec<String>) -> Result<Vec<String>, String> {
@@ -56,6 +87,8 @@ fn resolve_exec(exec: &str, args: Vec<String>) -> Result<Vec<String>, String> {
 
         /// Named process → strict /app/<name>
         name => {
+            validate_process_name(name)?;
+            
             let path = format!("/app/{}", name);
 
             if !Path::new(&path).exists() {
