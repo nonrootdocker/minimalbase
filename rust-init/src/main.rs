@@ -6,37 +6,37 @@ use signal_hook::iterator::Signals;
 use std::path::Path;
 use std::process::{Command, exit};
 
+use serde::Deserialize;
+
 const MAIN_ABI: &str = "/app/main";
 
 /// -------------------------
-/// Load ABI (JSON parsing intentionally omitted here for clarity)
-/// You would plug in serde_json in production
+/// ABI STRUCT (strict schema)
+/// -------------------------
+#[derive(Debug, Deserialize)]
+struct Abi {
+    process: Process,
+}
+
+#[derive(Debug, Deserialize)]
+struct Process {
+    exec: String,
+    args: Option<Vec<String>>,
+}
+
+/// -------------------------
+/// Load ABI (JSON parsing included)
 /// -------------------------
 fn load_abi() -> Result<(String, Vec<String>), String> {
     let content = std::fs::read_to_string(MAIN_ABI)
         .map_err(|e| format!("failed to read /app/main: {e}"))?;
 
-    let json: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("invalid JSON ABI: {e}"))?;
+    let abi: Abi = serde_json::from_str(&content)
+        .map_err(|e| format!("invalid ABI JSON: {e}"))?;
 
-    let process = &json["process"];
+    let args = abi.process.args.unwrap_or_default();
 
-    let exec = process["exec"]
-        .as_str()
-        .ok_or("missing exec field")?
-        .to_string();
-
-    let mut args = vec![];
-
-    if let Some(arr) = process["args"].as_array() {
-        for v in arr {
-            if let Some(s) = v.as_str() {
-                args.push(s.to_string());
-            }
-        }
-    }
-
-    Ok((exec, args))
+    Ok((abi.process.exec, args))
 }
 
 /// -------------------------
@@ -44,7 +44,7 @@ fn load_abi() -> Result<(String, Vec<String>), String> {
 /// -------------------------
 fn resolve_exec(exec: &str, args: Vec<String>) -> Result<Vec<String>, String> {
     match exec {
-        /// Python special-case
+        /// Python special-case (fixed contract)
         "python" => {
             let mut cmd = vec![
                 "/app/python-venv/bin/python".to_string(),
@@ -54,7 +54,7 @@ fn resolve_exec(exec: &str, args: Vec<String>) -> Result<Vec<String>, String> {
             Ok(cmd)
         }
 
-        /// Named process → /app/<name>
+        /// Named process → strict /app/<name>
         name => {
             let path = format!("/app/{}", name);
 
@@ -155,7 +155,7 @@ fn main() {
             _ => {}
         }
 
-        // exit if child is gone
+        // exit when child is gone
         if shutting_down {
             match waitpid(child_pid, Some(WaitPidFlag::WNOHANG)) {
                 Ok(WaitStatus::StillAlive) => {}
