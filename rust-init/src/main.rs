@@ -3,102 +3,81 @@ use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
 use signal_hook::iterator::Signals;
 
-use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, exit};
 
-/// -------------------------
-/// Core paths
-/// -------------------------
-const INIT: &str = "/app/init";
-const MAIN: &str = "/app/main";
+const MAIN_ABI: &str = "/app/main";
 
 /// -------------------------
-/// Alias runtime (v2 ABI layer)
+/// Load ABI (JSON parsing intentionally omitted here for clarity)
+/// You would plug in serde_json in production
 /// -------------------------
-fn resolve_alias(exec: &str) -> Option<PathBuf> {
-    let mut map: HashMap<&str, &str> = HashMap::new();
+fn load_abi() -> Result<(String, Vec<String>), String> {
+    let content = std::fs::read_to_string(MAIN_ABI)
+        .map_err(|e| format!("failed to read /app/main: {e}"))?;
 
-    map.insert("python", "/app/python-venv/bin/python");
-    map.insert("python3", "/app/python-venv/bin/python");
+    let json: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("invalid JSON ABI: {e}"))?;
 
-    map.get(exec).map(PathBuf::from)
+    let process = &json["process"];
+
+    let exec = process["exec"]
+        .as_str()
+        .ok_or("missing exec field")?
+        .to_string();
+
+    let mut args = vec![];
+
+    if let Some(arr) = process["args"].as_array() {
+        for v in arr {
+            if let Some(s) = v.as_str() {
+                args.push(s.to_string());
+            }
+        }
+    }
+
+    Ok((exec, args))
 }
 
 /// -------------------------
-/// Validate exec string
+/// resolve execution (v2.1 rules)
 /// -------------------------
-fn validate_exec(exec: &str) -> Result<(), String> {
-    if exec.contains('\\') {
-        return Err("backslash not allowed".into());
+fn resolve_exec(exec: &str, args: Vec<String>) -> Result<Vec<String>, String> {
+    match exec {
+        /// Python special-case
+        "python" => {
+            let mut cmd = vec![
+                "/app/python-venv/bin/python".to_string(),
+                "/app/main.py".to_string(),
+            ];
+            cmd.extend(args);
+            Ok(cmd)
+        }
+
+        /// Named process → /app/<name>
+        name => {
+            let path = format!("/app/{}", name);
+
+            if !Path::new(&path).exists() {
+                return Err(format!("process not found: {}", path));
+            }
+
+            let mut cmd = vec![path];
+            cmd.extend(args);
+            Ok(cmd)
+        }
     }
-    if exec.contains("..") {
-        return Err("path traversal not allowed".into());
-    }
-    Ok(())
 }
 
 /// -------------------------
-/// Resolve exec -> safe /app path
-/// -------------------------
-fn resolve_exec(exec: &str) -> Result<PathBuf, String> {
-    validate_exec(exec)?;
-
-    // 1. alias resolution
-    if let Some(p) = resolve_alias(exec) {
-        return Ok(p);
-    }
-
-    // 2. /app relative resolution
-    if exec.starts_with('/') {
-        return Err("absolute paths not allowed".into());
-    }
-
-    let base = Path::new("/app");
-    let full = base.join(exec);
-
-    let canon = fs::canonicalize(&full)
-        .map_err(|_| format!("exec not found: {}", full.display()))?;
-
-    let app_root = fs::canonicalize(base)
-        .map_err(|_| "missing /app".to_string())?;
-
-    if !canon.starts_with(&app_root) {
-        return Err("exec escapes /app".into());
-    }
-
-    Ok(canon)
-}
-
-/// -------------------------
-/// optional init hook
-/// -------------------------
-fn run_init() -> Result<(), String> {
-    if !Path::new(INIT).exists() {
-        return Ok(());
-    }
-
-    let status = Command::new(INIT)
-        .status()
-        .map_err(|e| format!("failed to run init: {e}"))?;
-
-    if !status.success() {
-        return Err("init failed".into());
-    }
-
-    Ok(())
-}
-
-/// -------------------------
-/// forward signal to child
+/// forward signal
 /// -------------------------
 fn forward_signal(pid: Pid, sig: Signal) {
     let _ = signal::kill(pid, sig);
 }
 
 /// -------------------------
-/// reap zombies (PID1 hygiene)
+/// reap children (PID1 hygiene)
 /// -------------------------
 fn reap_children() {
     loop {
@@ -111,39 +90,47 @@ fn reap_children() {
 }
 
 /// -------------------------
-/// spawn main process
-/// -------------------------
-fn spawn_main() -> Result<(std::process::Child, Pid), String> {
-    if !Path::new(MAIN).exists() {
-        return Err("/app/main is required but missing".into());
-    }
-
-    let mut child = Command::new(MAIN)
-        .spawn()
-        .map_err(|e| format!("failed to spawn main: {e}"))?;
-
-    let pid = Pid::from_raw(child.id() as i32);
-
-    Ok((child, pid))
-}
-
-/// -------------------------
-/// PID1 runtime loop
+/// MAIN PID1
 /// -------------------------
 fn main() {
-    if let Err(e) = run_init() {
-        eprintln!("[init] failed: {e}");
-        exit(1);
-    }
-
-    let (mut child, child_pid) = match spawn_main() {
+    // -------------------------
+    // Load ABI
+    // -------------------------
+    let (exec, args) = match load_abi() {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("[main] {e}");
+            eprintln!("[init] ABI load failed: {e}");
             exit(1);
         }
     };
 
+    // -------------------------
+    // Resolve command
+    // -------------------------
+    let cmd = match resolve_exec(&exec, args) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[init] resolve failed: {e}");
+            exit(1);
+        }
+    };
+
+    // -------------------------
+    // Spawn process
+    // -------------------------
+    let mut child = Command::new(&cmd[0])
+        .args(&cmd[1..])
+        .spawn()
+        .unwrap_or_else(|e| {
+            eprintln!("[init] failed to start process: {e}");
+            exit(1);
+        });
+
+    let child_pid = Pid::from_raw(child.id() as i32);
+
+    // -------------------------
+    // Signal handling
+    // -------------------------
     let mut signals = Signals::new([
         signal_hook::consts::SIGTERM,
         signal_hook::consts::SIGINT,
@@ -155,7 +142,7 @@ fn main() {
     for sig in signals.forever() {
         match sig {
             signal_hook::consts::SIGTERM | signal_hook::consts::SIGINT => {
-                eprintln!("[pid1] shutdown signal received");
+                eprintln!("[init] shutdown signal received");
                 shutting_down = true;
 
                 forward_signal(child_pid, Signal::SIGTERM);
@@ -168,7 +155,7 @@ fn main() {
             _ => {}
         }
 
-        // exit condition
+        // exit if child is gone
         if shutting_down {
             match waitpid(child_pid, Some(WaitPidFlag::WNOHANG)) {
                 Ok(WaitStatus::StillAlive) => {}
@@ -177,10 +164,13 @@ fn main() {
         }
     }
 
+    // -------------------------
+    // cleanup
+    // -------------------------
     forward_signal(child_pid, Signal::SIGTERM);
     reap_children();
 
     let _ = child.wait();
 
-    eprintln!("[pid1] exit complete");
+    eprintln!("[init] exit complete");
 }
