@@ -11,7 +11,7 @@
     pkgs = import nixpkgs { inherit system; };
 
 container-init = pkgs.rustPlatform.buildRustPackage {
-  pname = "container-init";
+  container-init = "container-init";
   version = "0.2.0";
 
   src = pkgs.lib.cleanSource ./rust-init;
