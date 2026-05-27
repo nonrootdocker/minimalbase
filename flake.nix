@@ -27,7 +27,7 @@ container-init = pkgs.rustPlatform.buildRustPackage {
 
   in {
     packages.${system} = {
-      container-init = container-init;
+      pname = "container-init";
 
       base-image = pkgs.dockerTools.buildImage {
         name = "minimalbase-ng";
