@@ -44,8 +44,6 @@ container-init = pkgs.rustPlatform.buildRustPackage {
         };
 
         config = {
-          Entrypoint = [ "${container-init}/bin/container-init" ];
-
           Env = [
             "TZ=UTC"
             "LANG=en_US.UTF-8"
