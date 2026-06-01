@@ -24,6 +24,9 @@ use serde::Deserialize;
 /// This file is expected to be owned by root and read-only inside the container.
 const MAIN_ABI: &str = "/app/main";
 
+/// Target minimum runtime to prevent rapid crash loops.
+const MINIMUM_LIFETIME_SECS: u64 = 120;
+
 /// Represents the structure of the JSON contract.
 #[derive(Debug, Deserialize)]
 struct Abi {
@@ -110,12 +113,32 @@ fn reap_children() {
     }
 }
 
+/// Computes the elapsed time since startup and sleeps for the remainder
+/// if the elapsed time is less than the defined threshold.
+fn enforce_minimum_runtime(start_time: Instant) {
+    let elapsed = start_time.elapsed();
+    let threshold = Duration::from_secs(MINIMUM_LIFETIME_SECS);
+
+    if elapsed < threshold {
+        let remaining = threshold - elapsed;
+        eprintln!(
+            "[init] container lifetime was only {:.2?}. Rate-limiting restart; sleeping for remaining {:.2?}...",
+            elapsed, remaining
+        );
+        std::thread::sleep(remaining);
+    }
+}
+
 fn main() {
+    // Record the start time of the init container system.
+    let start_time = Instant::now();
+
     // Load the ABI configuration.
     let (exec, args) = match load_abi() {
         Ok(v) => v,
         Err(e) => {
             eprintln!("[init] ABI load failed: {e}");
+            enforce_minimum_runtime(start_time);            
             exit(1);
         }
     };
@@ -125,6 +148,7 @@ fn main() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("[init] resolve failed: {e}");
+            enforce_minimum_runtime(start_time);            
             exit(1);
         }
     };
@@ -135,6 +159,7 @@ fn main() {
         .spawn()
         .unwrap_or_else(|e| {
             eprintln!("[init] failed to start process: {e}");
+            enforce_minimum_runtime(start_time);            
             exit(1);
         });
 
@@ -187,6 +212,10 @@ fn main() {
     
     // Explicitly wait on the primary child to release its exit code.
     let _ = child.wait();
+    eprintln!("[init] process exited");
+
+    // Apply the rate-limiting delay if the total execution was too brief.
+    enforce_minimum_runtime(start_time);
 
     eprintln!("[init] exit complete");
 }
