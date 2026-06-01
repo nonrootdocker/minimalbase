@@ -14,6 +14,7 @@ use nix::sys::signal::{self, Signal};
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
 use signal_hook::iterator::Signals;
+use std::time::{Instant, Duration};
 
 use std::path::Path;
 use std::process::{Command, exit};
