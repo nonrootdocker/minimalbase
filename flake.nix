@@ -43,6 +43,10 @@ container-init = pkgs.rustPlatform.buildRustPackage {
           ];
         };
 
+        extraCommands = ''
+          mkdir -m 1777 tmp
+        '';
+
         config = {
           Env = [
             "TZ=UTC"
