@@ -101,17 +101,33 @@ fn forward_signal(pid: Pid, sig: Signal) {
 ///
 /// This function cleans up all outstanding zombie processes using `waitpid` with `WNOHANG`
 /// so that the call is non-blocking and does not stall the main thread.
-fn reap_children() {
+fn reap_children(primary_pid: Pid) -> bool {
+    let mut primary_exited = false;
     loop {
         match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
-            // No more processes have changed state; stop reaping for now.
+            // No more processes have changed state; stop reaping.
             Ok(WaitStatus::StillAlive) => break,
-            // A child was successfully reaped; continue the loop to check for others.
+            
+            // A process has exited; check if it was our primary child.
+            Ok(WaitStatus::Exited(pid, _)) => {
+                if pid == primary_pid {
+                    primary_exited = true;
+                }
+            }
+            Ok(WaitStatus::Signaled(pid, _, _)) => {
+                if pid == primary_pid {
+                    primary_exited = true;
+                }
+            }
+            
+            // Another status change (stopped, continued); ignore and continue reaping.
             Ok(_) => continue,
-            // No child processes left, or an interrupt occurred; exit the reaping loop.
+            
+            // No child processes left, or error; exit the reaping loop.
             Err(_) => break,
         }
     }
+    primary_exited
 }
 
 /// Computes the elapsed time since startup and sleeps for the remainder
@@ -190,7 +206,10 @@ fn main() {
             
             // A child changed state (e.g., terminated or spawned a subprocess).
             signal_hook::consts::SIGCHLD => {
-                reap_children();
+                // If the primary process exited, break out of the event loop immediately.
+                if reap_children(child_pid) {
+                    break;
+                }                
             }
             _ => {}
         }
@@ -209,7 +228,7 @@ fn main() {
     // Graceful Cleanup.
     // Ensure the primary child has been signaled to stop, then perform one final reap.
     forward_signal(child_pid, Signal::SIGTERM);
-    reap_children();
+    reap_children(child_pid);
     
     // Explicitly wait on the primary child to release its exit code.
     let _ = child.wait();
