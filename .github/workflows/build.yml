@@ -1,46 +1,56 @@
-name: build-minimalbase-ng
+name: Build OCI Image
 
 on:
   push:
-    branches: [ "main" ]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout
+        uses: actions/checkout@v6
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
         with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
           extra_nix_config: |
             experimental-features = nix-command flakes
-            
-      - name: Debug rust-init directory
+
+      - name: Build
+        run: nix build -L
+
+      - name: Flake check
+        run: nix flake check -L
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get image name from Docker
+        if: github.event_name != 'pull_request'
+        id: image_meta
         run: |
-          echo "=== repo root ==="
-          ls -L .
-          echo "=== rust-init ==="
-          ls -al rust-init
-          echo "=== cargo files ==="
-          find rust-init -maxdepth 2 -type f
-      - name: Build image
-        run: nix build .#base-image
+          IMAGE_NAME=$(docker load < result 2>&1 | grep "Loaded image:" | awk '{print $NF}')
+          echo "local_image=${IMAGE_NAME}" >> $GITHUB_OUTPUT
 
-      - name: Load Docker image
-        run: docker load < result
-
-      - name: Login to GHCR
-        if: github.ref == 'refs/heads/main'
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-
-      - name: Tag image
-        if: github.ref == 'refs/heads/main'
+      - name: Tag and Push Image
+        if: github.event_name != 'pull_request'
         run: |
-          docker tag minimalbase-ng:latest ghcr.io/${{ github.repository }}:latest
+          TARGET_IMAGE="ghcr.io/${{ github.repository }}"
 
-      - name: Push image
-        if: github.ref == 'refs/heads/main'
-        run: docker push ghcr.io/${{ github.repository }}:latest
+          docker tag "${{ steps.image_meta.outputs.local_image }}" "${TARGET_IMAGE}:latest"
+          docker tag "${{ steps.image_meta.outputs.local_image }}" "${TARGET_IMAGE}:${{ github.sha }}"
+
+          docker push "${TARGET_IMAGE}:latest"
+          docker push "${TARGET_IMAGE}:${{ github.sha }}"
