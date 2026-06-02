@@ -27,6 +27,8 @@ container-init = pkgs.rustPlatform.buildRustPackage {
 
   in {
     packages.${system} = {
+      default = self.packages.${system}.base-image;
+
       container-init = container-init;
 
       base-image = pkgs.dockerTools.buildImage {
