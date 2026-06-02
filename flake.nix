@@ -41,6 +41,7 @@ container-init = pkgs.rustPlatform.buildRustPackage {
             coreutils
             tzdata
             cacert
+            caCertificates
             container-init
           ];
         };
