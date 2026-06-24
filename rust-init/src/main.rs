@@ -39,22 +39,26 @@ struct Abi {
 struct Process {
     exec: String,
     args: Option<Vec<String>>,
+    /// Optional working directory to `chdir` into before exec. Useful for
+    /// applications that read/write configuration relative to the cwd.
+    cwd: Option<String>,
+    /// Optional directories to create (`mkdir -p`) before exec. Useful for
+    /// applications that do not create their own data dirs on a mounted volume.
+    dirs: Option<Vec<String>>,
 }
 
 /// Reads and parses the ABI JSON configuration from the filesystem.
 ///
 /// Because this file is loaded at container boot, any parsing failure
 /// will halt PID 1 and cleanly terminate the container immediately.
-fn load_abi() -> Result<(String, Vec<String>), String> {
+fn load_abi() -> Result<Process, String> {
     let content = std::fs::read_to_string(MAIN_ABI)
         .map_err(|e| format!("failed to read {MAIN_ABI}: {e}"))?;
 
     let abi: Abi = serde_json::from_str(&content)
         .map_err(|e| format!("invalid ABI JSON: {e}"))?;
 
-    let args = abi.process.args.unwrap_or_default();
-
-    Ok((abi.process.exec, args))
+    Ok(abi.process)
 }
 
 /// Resolves the executable path and verifies its viability.
@@ -151,32 +155,49 @@ fn main() {
     let start_time = Instant::now();
 
     // Load the ABI configuration.
-    let (exec, args) = match load_abi() {
+    let process = match load_abi() {
         Ok(v) => v,
         Err(e) => {
             eprintln!("[init] ABI load failed: {e}");
-            enforce_minimum_runtime(start_time);            
+            enforce_minimum_runtime(start_time);
             exit(1);
         }
     };
 
+    // Create any requested directories before launching the payload. This lets
+    // applications that do not create their own data dirs operate on a mounted
+    // volume (created relative to the running user's permissions).
+    if let Some(dirs) = &process.dirs {
+        for dir in dirs {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                eprintln!("[init] failed to create directory {dir}: {e}");
+                enforce_minimum_runtime(start_time);
+                exit(1);
+            }
+        }
+    }
+
     // Resolve the target binary path.
-    let cmd = match resolve_exec(&exec, args) {
+    let cmd = match resolve_exec(&process.exec, process.args.clone().unwrap_or_default()) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("[init] resolve failed: {e}");
-            enforce_minimum_runtime(start_time);            
+            enforce_minimum_runtime(start_time);
             exit(1);
         }
     };
 
-    // Spawn the primary child application.
-    let mut child = Command::new(&cmd[0])
-        .args(&cmd[1..])
+    // Spawn the primary child application, optionally in a specified working dir.
+    let mut command = Command::new(&cmd[0]);
+    command.args(&cmd[1..]);
+    if let Some(cwd) = &process.cwd {
+        command.current_dir(cwd);
+    }
+    let mut child = command
         .spawn()
         .unwrap_or_else(|e| {
             eprintln!("[init] failed to start process: {e}");
-            enforce_minimum_runtime(start_time);            
+            enforce_minimum_runtime(start_time);
             exit(1);
         });
 
