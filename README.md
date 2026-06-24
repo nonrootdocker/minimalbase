@@ -1,1 +1,1 @@
-# minimalbase-ng
+# minimalbase
