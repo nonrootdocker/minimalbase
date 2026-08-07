@@ -12,7 +12,7 @@
 
 container-init = pkgs.rustPlatform.buildRustPackage {
   name = "container-init";
-  version = "0.2.0";
+  version = "0.3.0";
 
   src = pkgs.lib.cleanSource ./rust-init;
 
