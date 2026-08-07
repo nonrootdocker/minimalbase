@@ -5,6 +5,8 @@
 //!
 //! ## Core Responsibilities:
 //! * **Configuration Loading**: Parses a read-only JSON specification to determine the payload.
+//! * **Runtime Arguments**: Appends any arguments given to init itself (the container's
+//!   `command:` / `CMD`) to the ABI-declared argument list.
 //! * **Process Management**: Spawns and tracks the primary application process.
 //! * **Signal Forwarding**: Forwards lifecycle signals (like `SIGTERM` or `SIGINT`) to the payload.
 //! * **Orphan Reaping**: Automatically adopts and cleans up zombie subprocesses to prevent PID leaks.
@@ -38,6 +40,8 @@ struct Abi {
 #[derive(Debug, Deserialize)]
 struct Process {
     exec: String,
+    /// Baseline arguments baked into the image. Arguments supplied at runtime
+    /// (see [`runtime_args`]) are appended to these.
     args: Option<Vec<String>>,
     /// Optional working directory to `chdir` into before exec. Useful for
     /// applications that read/write configuration relative to the cwd.
@@ -59,6 +63,16 @@ fn load_abi() -> Result<Process, String> {
         .map_err(|e| format!("invalid ABI JSON: {e}"))?;
 
     Ok(abi.process)
+}
+
+/// Collects the arguments passed to init itself, skipping `argv[0]`.
+///
+/// Because init runs as the container's entrypoint, these are exactly the words
+/// of a Compose `command:` (or a `docker run` trailing command / image `CMD`).
+/// Surfacing them lets a deployment extend the payload's command line without
+/// rebuilding the image, while `exec` stays pinned by the read-only ABI.
+fn runtime_args() -> Vec<String> {
+    std::env::args().skip(1).collect()
 }
 
 /// Resolves the executable path and verifies its viability.
@@ -177,8 +191,15 @@ fn main() {
         }
     }
 
+    // Build the payload's argument list: the ABI baseline first, then whatever
+    // the runtime handed us. Appending (rather than replacing) means an image
+    // that declares no `args` yields full control to the deployment, while an
+    // image that does declare them keeps its required flags intact.
+    let mut args = process.args.clone().unwrap_or_default();
+    args.extend(runtime_args());
+
     // Resolve the target binary path.
-    let cmd = match resolve_exec(&process.exec, process.args.clone().unwrap_or_default()) {
+    let cmd = match resolve_exec(&process.exec, args) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("[init] resolve failed: {e}");
